@@ -15,16 +15,16 @@ runtime-generated glyphs.
 
 ## Download & install
 
-### 🍎 macOS — Apple Silicon or Intel, macOS 12 Monterey+ (when built from source)
+### 🍎 macOS — Apple Silicon or Intel, macOS 12 Monterey+
 
-**⬇ [Download ModernMatrix-macOS.zip](https://github.com/DigitalChewie/ModernMatrixScreensaver/releases/latest/download/ModernMatrix-macOS.zip)**
+**⬇ [Download ModernMatrix-macOS.zip](https://github.com/aemdeei/ModernMatrixScreensaver/releases/latest/download/ModernMatrix-macOS.zip)**
 
 1. Unzip it.
-2. Double-click **Modern Matrix.saver** → System Settings opens → click **Install**.
+2. Double-click **Modern Matrix.saver** → System Settings (System Preferences on Monterey) opens → click **Install**.
 3. Select it in **Screen Saver** settings → **Options…** to configure — encodings, density/speed,
    bloom, and more, with a live preview.
 
-Signed with a Developer ID and **notarized by Apple**, so it opens with no security warning.
+This build is ad-hoc signed, not notarized: if macOS blocks it, right-click **Modern Matrix.saver** → **Open**.
 
 ### 🪟 Windows — 10/11, 64-bit
 
