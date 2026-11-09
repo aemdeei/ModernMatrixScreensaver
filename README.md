@@ -15,7 +15,7 @@ runtime-generated glyphs.
 
 ## Download & install
 
-### 🍎 macOS — Apple Silicon, macOS 26+
+### 🍎 macOS — Apple Silicon or Intel, macOS 12 Monterey+ (when built from source)
 
 **⬇ [Download ModernMatrix-macOS.zip](https://github.com/DigitalChewie/ModernMatrixScreensaver/releases/latest/download/ModernMatrix-macOS.zip)**
 
@@ -72,11 +72,13 @@ A platform quirk, not a bug — and confirmed by Apple's own engineers:
 
 ## Requirements
 
-- **macOS:** Apple Silicon Mac, macOS 26+
+- **macOS:** Apple Silicon or Intel Mac, macOS 12 Monterey or later
 - **Windows:** 64-bit Windows 10 / 11
 
-*(Building from source needs the Xcode 26 toolchain on macOS, or Visual Studio Build Tools 2022
-with the "Desktop development with C++" workload on Windows.)*
+*(Building from source needs Xcode or the Command Line Tools on macOS, or Visual Studio Build Tools 2022
+with the "Desktop development with C++" workload on Windows. On macOS, `./build.sh install` targets
+macOS 12 Monterey+. Without Xcode's Metal compiler the shaders are compiled at runtime from the bundled
+`Shaders.metal`. The build is universal (Apple Silicon + Intel); `ARCHS=arm64` skips the Intel slice.)*
 
 ---
 

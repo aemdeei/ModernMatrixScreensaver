@@ -19,7 +19,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$ROOT/build"
 SDK="$(xcrun --show-sdk-path)"
-DEPLOY_TARGET="arm64-apple-macosx26.0"
+# Minimum macOS: 12 Monterey. Built universal (Apple Silicon + Intel) by default;
+# ARCHS=arm64 for a faster Apple-Silicon-only build.
+MIN_OS="${MIN_OS:-12.0}"
+ARCHS=( ${ARCHS:-arm64 x86_64} )
 CONFIG="${CONFIG:-debug}"
 
 APP="$BUILD/Modern Matrix.app"
@@ -50,9 +53,31 @@ else
   CC_OPT=( -O0 -g )
 fi
 
-SWIFTC=( swiftc -sdk "$SDK" -target "$DEPLOY_TARGET" -swift-version 5 "${SWIFT_OPT[@]}" )
+SWIFTC=( swiftc -sdk "$SDK" -swift-version 5 "${SWIFT_OPT[@]}" )
 
 log() { printf '\033[1;32m▸ %s\033[0m\n' "$*"; }
+
+# swiftc once per arch (with that arch's mmcore objects), then lipo into a universal binary.
+#   swift_universal <output> <swiftc args...>
+swift_universal() {
+  local out="$1"; shift
+  local arch slices=() objs o
+  for arch in "${ARCHS[@]}"; do
+    objs=()
+    for o in "${MMCORE_OBJS[@]+"${MMCORE_OBJS[@]}"}"; do objs+=( "$o.$arch" ); done
+    # Newer toolchains (Swift 6.4+) ship the back-deploy shims (libswiftCompatibility56,
+    # libswiftCompatibilityPacks) for arm64 only. This code uses neither Swift concurrency
+    # nor parameter packs, so the x86_64 slice links without them.
+    local extra=()
+    [[ "$arch" == "x86_64" ]] && extra=( -runtime-compatibility-version none )
+    "${SWIFTC[@]}" -target "$arch-apple-macosx$MIN_OS" "${extra[@]+"${extra[@]}"}" "$@" \
+      "${objs[@]+"${objs[@]}"}" -o "$out.$arch"
+    rm -rf "$out.$arch.dSYM"
+    slices+=( "$out.$arch" )
+  done
+  lipo -create "${slices[@]}" -output "$out"
+  rm -f "${slices[@]}"
+}
 
 # Sign a bundle. Ad-hoc by default; with a Developer ID identity (the `dist` target) it adds
 # the hardened runtime + a secure timestamp, which notarization requires.
@@ -80,11 +105,29 @@ notarize_and_staple() {
 }
 
 compile_metal() {
-  log "Compiling Metal shaders → default.metallib"
   mkdir -p "$BUILD"
+  rm -f "$METALLIB"
+  # The offline Metal compiler ships with Xcode, not the Command Line Tools. Without it we
+  # skip the metallib and the Renderer compiles the bundled Shaders.metal at runtime.
+  if ! xcrun -sdk macosx -f metal >/dev/null 2>&1; then
+    log "Metal compiler not found — shaders will be compiled at runtime from Shaders.metal"
+    return 0
+  fi
+  log "Compiling Metal shaders → default.metallib (MSL 2.4, macOS $MIN_OS+)"
+  # Pin the language version + deployment target so the metallib loads on Monterey
+  # (newer SDKs default to an MSL version older OSes can't read).
   xcrun -sdk macosx metal "${METAL_OPT[@]+"${METAL_OPT[@]}"}" -frecord-sources \
+    -std=macos-metal2.4 -mmacosx-version-min="$MIN_OS" \
     -c "$ROOT/Resources/Shaders.metal" -o "$BUILD/Shaders.air"
   xcrun -sdk macosx metallib "$BUILD/Shaders.air" -o "$METALLIB"
+}
+
+# Copy shader resources into a bundle: the metallib if we built one, plus the source as
+# a runtime-compile fallback.
+copy_shaders() {
+  local res="$1"
+  [[ -f "$METALLIB" ]] && cp "$METALLIB" "$res/default.metallib"
+  cp "$ROOT/Resources/Shaders.metal" "$res/Shaders.metal"
 }
 
 compile_core() {
@@ -92,11 +135,14 @@ compile_core() {
   mkdir -p "$BUILD"
   MMCORE_OBJS=()
   local src obj
+  local arch
   for src in "${CORE_C_SOURCES[@]}"; do
     obj="$BUILD/$(basename "${src%.c}").o"
-    clang -std=c99 -Wall -c -arch arm64 -isysroot "$SDK" -target "$DEPLOY_TARGET" \
-      "${CC_OPT[@]}" "$src" -o "$obj"
-    MMCORE_OBJS+=( "$obj" )
+    for arch in "${ARCHS[@]}"; do
+      clang -std=c99 -Wall -c -isysroot "$SDK" -target "$arch-apple-macosx$MIN_OS" \
+        "${CC_OPT[@]}" "$src" -o "$obj.$arch"
+    done
+    MMCORE_OBJS+=( "$obj" )   # per-arch slices live at $obj.<arch>
   done
 }
 
@@ -106,18 +152,15 @@ build_harness() {
   log "Building app → $(basename "$APP")"
   rm -rf "$APP"
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-  "${SWIFTC[@]}" \
+  swift_universal "$APP/Contents/MacOS/MatrixRainHarness" \
     -module-name MatrixRainHarness \
     -import-objc-header "$BRIDGING_HEADER" \
     "${CORE_SOURCES[@]}" "$ROOT"/Sources/Harness/*.swift \
-    "${MMCORE_OBJS[@]+"${MMCORE_OBJS[@]}"}" \
     -framework AppKit -framework Metal -framework MetalKit -framework QuartzCore \
     -framework CoreText -framework CoreGraphics -framework CoreImage \
-    -framework SwiftUI -framework ScreenSaver \
-    -o "$APP/Contents/MacOS/MatrixRainHarness"
-  rm -rf "$APP/Contents/MacOS/MatrixRainHarness.dSYM"
+    -framework SwiftUI -framework ScreenSaver
   cp "$ROOT/Sources/Harness/Info.plist" "$APP/Contents/Info.plist"
-  cp "$METALLIB" "$APP/Contents/Resources/default.metallib"
+  copy_shaders "$APP/Contents/Resources"
   sign_bundle "$APP"
   log "App ready: $APP"
 }
@@ -129,24 +172,22 @@ build_saver() {
   rm -rf "$SAVER"
   mkdir -p "$SAVER/Contents/MacOS" "$SAVER/Contents/Resources"
   # A .saver executable must be a Mach-O bundle (MH_BUNDLE): -Xlinker -bundle.
-  "${SWIFTC[@]}" \
+  swift_universal "$SAVER/Contents/MacOS/MatrixRain" \
     -module-name MatrixRain \
     -emit-executable -Xlinker -bundle \
     -import-objc-header "$BRIDGING_HEADER" \
     "${CORE_SOURCES[@]}" "$ROOT"/Sources/Saver/*.swift \
-    "${MMCORE_OBJS[@]+"${MMCORE_OBJS[@]}"}" \
     -framework AppKit -framework Metal -framework MetalKit -framework QuartzCore \
     -framework CoreText -framework CoreGraphics -framework CoreImage \
-    -framework ScreenSaver -framework SwiftUI \
-    -o "$SAVER/Contents/MacOS/MatrixRain"
-  rm -rf "$SAVER/Contents/MacOS/MatrixRain.dSYM"
+    -framework ScreenSaver -framework SwiftUI
   cp "$ROOT/Sources/Saver/Info.plist" "$SAVER/Contents/Info.plist"
-  cp "$METALLIB" "$SAVER/Contents/Resources/default.metallib"
+  copy_shaders "$SAVER/Contents/Resources"
   # Picker thumbnail (the wallpaper agent shows this in the grid; same convention as Apple savers).
   cp "$ROOT/Sources/Saver/thumbnail.png" "$SAVER/Contents/Resources/thumbnail.png"
   cp "$ROOT/Sources/Saver/thumbnail@2x.png" "$SAVER/Contents/Resources/thumbnail@2x.png"
   sign_bundle "$SAVER"
-  log "Mach-O type: $(otool -hv "$SAVER/Contents/MacOS/MatrixRain" | awk 'NR==4{print $5}')"
+  log "Mach-O type: $(otool -hv "$SAVER/Contents/MacOS/MatrixRain" | awk 'NR==4{print $5}' | head -1)"
+  log "Architectures: $(lipo -archs "$SAVER/Contents/MacOS/MatrixRain")"
   log "Screensaver ready: $SAVER"
 }
 

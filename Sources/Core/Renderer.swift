@@ -94,9 +94,21 @@ final class Renderer {
 
     private let sceneFormat: MTLPixelFormat = .rgba16Float
 
+    /// Prefer the precompiled default.metallib; fall back to compiling the bundled
+    /// Shaders.metal at runtime (used when the build machine has no Metal toolchain, or
+    /// when the metallib can't be loaded on an older OS).
+    static func loadLibrary(device: MTLDevice, bundle: Bundle) -> MTLLibrary? {
+        if let lib = try? device.makeDefaultLibrary(bundle: bundle) { return lib }
+        guard let url = bundle.url(forResource: "Shaders", withExtension: "metal"),
+              let src = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let opts = MTLCompileOptions()
+        opts.languageVersion = .version2_4   // highest MSL on macOS 12 Monterey
+        return try? device.makeLibrary(source: src, options: opts)
+    }
+
     init?(device: MTLDevice, bundle: Bundle, settings: Settings) {
         guard let queue = device.makeCommandQueue(),
-              let library = try? device.makeDefaultLibrary(bundle: bundle) else { return nil }
+              let library = Renderer.loadLibrary(device: device, bundle: bundle) else { return nil }
         self.device = device
         self.queue = queue
         self.library = library
